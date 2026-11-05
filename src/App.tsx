@@ -1,13 +1,15 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { CropStage, MAX_ZOOM, type CropState } from './components/CropStage';
-import { ExportQueue, ExportResults, type ExportedFile, type QueueItem } from './components/ExportQueue';
+import { ExportQueue, ExportResults, type QueueItem } from './components/ExportQueue';
 import { RatioPicker } from './components/RatioPicker';
 import { SizeList } from './components/SizeList';
 import { Uploader } from './components/Uploader';
 import { UpscaleDialog, type UpscaleItem } from './components/UpscaleDialog';
 import { downloadBlob } from './lib/download';
 import { exportFileName, zipFileName } from './lib/filename';
-import { loadImage, releaseImage, type LoadedImage } from './lib/image';
+import { createEngine, type Engine } from './lib/engine';
+import type { ExportedFile, ExportOptions, ExportProgress } from './lib/exportJobs';
+import { describeImage, validateFile, type LoadedImage } from './lib/image';
 import {
   centeredCrop,
   effectivePpi,
@@ -28,8 +30,6 @@ import {
   type Orientation,
   type RatioId,
 } from './lib/ratios';
-import { renderJpeg } from './lib/render';
-import { buildZip } from './lib/zip';
 import './App.css';
 
 type Status =
@@ -48,7 +48,24 @@ const DEFAULT_RATIO: RatioId = '4:5';
 const groupKey = (ratio: RatioId, o: Orientation) => `${ratio}-${o}`;
 const fullKey = (ratio: RatioId, o: Orientation) => `${groupKey(ratio, o)}-full`;
 const freshCrop = (): CropState => ({ crop: { x: 0, y: 0 }, zoom: 1, pixels: null });
-const nextFrame = () => new Promise((r) => setTimeout(r, 30));
+
+/**
+ * Debug switches, used by the browser tests:
+ *   ?engine=main       render on the page instead of in a worker
+ *   ?canvasLimit=N     pretend canvases can't exceed N pixels (iOS Safari: 16777216)
+ */
+const params = new URLSearchParams(window.location.search);
+const PREFERRED_ENGINE = params.get('engine') === 'main' ? 'main' : 'worker';
+const EXPORT_OPTIONS: ExportOptions = {
+  maxArea: Number(params.get('canvasLimit')) || undefined,
+};
+
+function describeProgress(p: ExportProgress): string {
+  if (!p.job) return 'Packing ZIP…';
+  const prefix = p.total > 1 ? `${p.index + 1} of ${p.total}: ` : '';
+  const pct = p.fraction ? ` (${Math.round(p.fraction * 100)}%)` : '';
+  return `Rendering ${prefix}${p.job.width.toLocaleString()} × ${p.job.height.toLocaleString()} px${pct}…`;
+}
 
 export default function App() {
   const [image, setImage] = useState<LoadedImage | null>(null);
@@ -61,16 +78,36 @@ export default function App() {
   const [pendingUpscale, setPendingUpscale] = useState<{ all: QueueItem[]; up: UpscaleItem[] } | null>(null);
   const [status, setStatus] = useState<Status>({ kind: 'idle' });
   const [results, setResults] = useState<Results | null>(null);
+  const engineRef = useRef<Promise<Engine> | null>(null);
+
+  function getEngine(): Promise<Engine> {
+    engineRef.current ??= createEngine(PREFERRED_ENGINE).then((e) => {
+      // Exposed for the browser tests.
+      document.documentElement.dataset.engine = e.kind;
+      return e;
+    });
+    return engineRef.current;
+  }
+
+  useEffect(() => {
+    void getEngine();
+  }, []);
 
   useEffect(() => () => {
-    if (image) releaseImage(image);
+    if (image) URL.revokeObjectURL(image.url);
   }, [image]);
 
   const handleFile = useCallback(async (file: File) => {
+    const problem = validateFile(file);
+    if (problem) {
+      setLoadError(problem);
+      return;
+    }
     setLoading(true);
     setLoadError(null);
     try {
-      const img = await loadImage(file);
+      const engine = await getEngine();
+      const img = describeImage(file, await engine.load(file));
       const o = orientationOf(img.width, img.height);
       setImage(img);
       setRatioId(DEFAULT_RATIO);
@@ -158,31 +195,27 @@ export default function App() {
   async function runExport(items: QueueItem[]) {
     if (!image || items.length === 0) return;
     setResults(null);
-    const files: ExportedFile[] = [];
-    const entries: { name: string; data: Uint8Array }[] = [];
+    setStatus({ kind: 'working', message: 'Starting…' });
     try {
-      for (const [i, item] of items.entries()) {
-        const { target, crop, fileName } = item;
-        const prefix = items.length > 1 ? `${i + 1} of ${items.length}: ` : '';
-        setStatus({ kind: 'working', message: `Rendering ${prefix}${target.widthPx} × ${target.heightPx} px…` });
-        await nextFrame();
-        const blob = await renderJpeg(image.bitmap, crop, target.widthPx, target.heightPx);
-        files.push({ name: fileName, width: target.widthPx, height: target.heightPx, bytes: blob.size });
-        if (items.length === 1) {
-          downloadBlob(blob, fileName);
-          setStatus({ kind: 'done', message: `Downloaded ${fileName} (${formatBytes(blob.size)})` });
-          setResults({ files, zip: null });
-          return;
-        }
-        entries.push({ name: fileName, data: new Uint8Array(await blob.arrayBuffer()) });
-      }
-      setStatus({ kind: 'working', message: 'Packing ZIP…' });
-      await nextFrame();
-      const zip = new Blob([buildZip(entries) as BlobPart], { type: 'application/zip' });
-      const name = zipFileName(image.base);
-      downloadBlob(zip, name);
-      setStatus({ kind: 'done', message: `Downloaded ${name} (${items.length} files, ${formatBytes(zip.size)})` });
-      setResults({ files, zip: { name, bytes: zip.size } });
+      const engine = await getEngine();
+      const jobs = items.map(({ fileName, crop, target }) => ({
+        fileName,
+        crop,
+        width: target.widthPx,
+        height: target.heightPx,
+      }));
+      const out = await engine.export(jobs, zipFileName(image.base), EXPORT_OPTIONS, (p) =>
+        setStatus({ kind: 'working', message: describeProgress(p) }),
+      );
+      downloadBlob(out.blob, out.fileName);
+      const isZip = out.files.length > 1;
+      setStatus({
+        kind: 'done',
+        message: isZip
+          ? `Downloaded ${out.fileName} (${out.files.length} files, ${formatBytes(out.blob.size)})`
+          : `Downloaded ${out.fileName} (${formatBytes(out.blob.size)})`,
+      });
+      setResults({ files: out.files, zip: isZip ? { name: out.fileName, bytes: out.blob.size } : null });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       setStatus({ kind: 'error', message });
