@@ -422,6 +422,12 @@ legend.field-label {
   background: transparent;
 }
 
+.btn.is-disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
 .btn-block {
   width: 100%;
 }

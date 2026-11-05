@@ -1,3 +1,4 @@
+import type { ExportedFile } from '../lib/exportJobs';
 import { formatBytes, needsUpscale, type CropRect, type ExportTarget } from '../lib/print';
 import { ratioLabel } from '../lib/ratios';
 
@@ -7,13 +8,6 @@ export interface QueueItem {
   fileName: string;
   /** False when this ratio still uses the automatic centred crop. */
   adjusted: boolean;
-}
-
-export interface ExportedFile {
-  name: string;
-  width: number;
-  height: number;
-  bytes: number;
 }
 
 interface Props {
@@ -77,7 +71,7 @@ export function ExportResults({ files, zip }: { files: ExportedFile[]; zip: { na
       )}
       <ul>
         {files.map((f) => (
-          <li key={f.name}>
+          <li key={f.name} data-method={f.method}>
             <span className="results-name">{f.name}</span>
             <span className="results-meta">
               {f.width.toLocaleString()} × {f.height.toLocaleString()} px · {formatBytes(f.bytes)}

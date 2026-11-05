@@ -11,7 +11,8 @@
     "test": "vitest run",
     "test:e2e": "playwright test",
     "fixtures": "node scripts/make-fixtures.mjs",
-    "report": "node scripts/export-report.mjs"
+    "report": "node scripts/export-report.mjs",
+    "typecheck:tests": "tsc -p tsconfig.tests.json"
   },
   "dependencies": {
     "fflate": "^0.8.3",
