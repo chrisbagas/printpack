@@ -1,7 +1,7 @@
 /// <reference lib="webworker" />
 import { canvas2dAvailable } from '../lib/canvas';
 import { decodeImage } from '../lib/decode';
-import { exportJobs } from '../lib/exportJobs';
+import { exportJobs, previewJob, renderJobs } from '../lib/exportJobs';
 import type { Request, Response } from './protocol';
 
 declare const self: DedicatedWorkerGlobalScope;
@@ -38,6 +38,19 @@ self.onmessage = async (e: MessageEvent<Request>) => {
           reply({ id: req.id, type: 'progress', progress }),
         );
         reply({ id: req.id, type: 'exported', output });
+        break;
+      }
+      case 'render': {
+        if (!bitmap) throw new Error('No image loaded.');
+        const files = await renderJobs(bitmap, req.jobs, req.options, (progress) =>
+          reply({ id: req.id, type: 'progress', progress }),
+        );
+        reply({ id: req.id, type: 'rendered', files });
+        break;
+      }
+      case 'preview': {
+        if (!bitmap) throw new Error('No image loaded.');
+        reply({ id: req.id, type: 'previewed', blob: await previewJob(bitmap, req.job, req.quality) });
         break;
       }
     }

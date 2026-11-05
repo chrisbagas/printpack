@@ -1,5 +1,14 @@
 import { decodeImage } from './decode';
-import { exportJobs, type ExportJob, type ExportOptions, type ExportOutput, type ExportProgress } from './exportJobs';
+import {
+  exportJobs,
+  previewJob,
+  renderJobs,
+  type ExportJob,
+  type ExportOptions,
+  type ExportOutput,
+  type ExportProgress,
+  type RenderedFile,
+} from './exportJobs';
 import type { Simulation } from './simulate';
 import type { ImageInfo, Request, Response } from '../workers/protocol';
 
@@ -28,6 +37,10 @@ export interface Engine {
     options: ExportOptions,
     onProgress: (p: ExportProgress) => void,
   ): Promise<ExportOutput>;
+  /** Render each job to its own JPG, without packaging. */
+  render(jobs: ExportJob[], options: ExportOptions, onProgress: (p: ExportProgress) => void): Promise<RenderedFile[]>;
+  /** A 100% crop from the middle of a job at the given JPEG quality. */
+  preview(job: ExportJob, quality: number): Promise<Blob>;
   dispose(): void;
 }
 
@@ -112,6 +125,17 @@ class WorkerEngine implements Engine {
     });
   }
 
+  render(jobs: ExportJob[], options: ExportOptions, onProgress: (p: ExportProgress) => void) {
+    return this.call({ type: 'render', jobs, options }, (m) => {
+      if (m.type === 'progress') onProgress(m.progress);
+      return m.type === 'rendered' ? m.files : undefined;
+    });
+  }
+
+  preview(job: ExportJob, quality: number) {
+    return this.call({ type: 'preview', job, quality }, (m) => (m.type === 'previewed' ? m.blob : undefined));
+  }
+
   dispose() {
     this.stop(new EngineStoppedError());
   }
@@ -139,6 +163,17 @@ class MainThreadEngine implements Engine {
     // A crash can't be simulated on the page; treat it as an ordinary failure.
     const simulate = options.simulate === 'worker-crash' ? 'export-error' : options.simulate;
     return exportJobs(this.bitmap, jobs, zipName, { ...options, simulate }, onProgress);
+  }
+
+  async render(jobs: ExportJob[], options: ExportOptions, onProgress: (p: ExportProgress) => void) {
+    if (!this.bitmap) throw new Error('No image loaded.');
+    const simulate = options.simulate === 'worker-crash' ? 'export-error' : options.simulate;
+    return renderJobs(this.bitmap, jobs, { ...options, simulate }, onProgress);
+  }
+
+  async preview(job: ExportJob, quality: number) {
+    if (!this.bitmap) throw new Error('No image loaded.');
+    return previewJob(this.bitmap, job, quality);
   }
 
   dispose() {
@@ -218,7 +253,8 @@ export class EngineHost {
     });
   }
 
-  export(jobs: ExportJob[], zipName: string, options: ExportOptions, onProgress: (p: ExportProgress) => void) {
+  /** Run an operation on a live engine that has the current image loaded. */
+  private withImage<T>(op: (engine: Engine) => Promise<T>): Promise<T> {
     return this.enqueue(async () => {
       const engine = await this.current();
       if (this.loadedInto !== engine) {
@@ -226,8 +262,20 @@ export class EngineHost {
         await engine.load(this.file); // after a crash, the new engine needs the image again
         this.loadedInto = engine;
       }
-      return engine.export(jobs, zipName, options, onProgress);
+      return op(engine);
     });
+  }
+
+  export(jobs: ExportJob[], zipName: string, options: ExportOptions, onProgress: (p: ExportProgress) => void) {
+    return this.withImage((e) => e.export(jobs, zipName, options, onProgress));
+  }
+
+  render(jobs: ExportJob[], options: ExportOptions, onProgress: (p: ExportProgress) => void) {
+    return this.withImage((e) => e.render(jobs, options, onProgress));
+  }
+
+  preview(job: ExportJob, quality: number) {
+    return this.withImage((e) => e.preview(job, quality));
   }
 
   dispose(): void {
