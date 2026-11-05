@@ -46,7 +46,53 @@ async function photo(width, height) {
     .composite([{ input: grain, tile: true, blend: 'soft-light' }]);
 }
 
+/**
+ * 2400×3000 (exactly 4:5) image built to expose strip seams: a 2D gradient,
+ * 1 px black lines on every 7th row down the full height (x 100–500),
+ * 1 px vertical lines (x 600–1000), diagonals, thin colour bands and text.
+ */
+function boundaryScene() {
+  const W = 2400;
+  const H = 3000;
+  const text = [];
+  for (let y = 40, i = 0; y < H; y += 46, i++) {
+    const size = 14 + (i % 4) * 6;
+    text.push(
+      `<text x="1800" y="${y}" font-family="DejaVu Sans, Liberation Sans, Arial, sans-serif" font-size="${size}" fill="#111">Row ${i} — PrintPack 0123456789 ÀÉÎ</text>`,
+    );
+  }
+  const bands = [];
+  for (let y = 0; y < H; y += 24) {
+    bands.push(`<rect x="1700" y="${y}" width="80" height="3" fill="#e01010"/>`);
+    bands.push(`<rect x="1700" y="${y + 3}" width="80" height="3" fill="#10b010"/>`);
+    bands.push(`<rect x="1700" y="${y + 6}" width="80" height="3" fill="#1030e0"/>`);
+  }
+  return Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" shape-rendering="crispEdges">
+    <defs>
+      <linearGradient id="h" x1="0" y1="0" x2="1" y2="0">
+        <stop offset="0" stop-color="#2050a0"/><stop offset="1" stop-color="#f0c040"/></linearGradient>
+      <linearGradient id="v" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#ffffff" stop-opacity="0"/><stop offset="1" stop-color="#802040" stop-opacity="0.8"/></linearGradient>
+      <pattern id="hl" width="8" height="7" patternUnits="userSpaceOnUse"><rect width="8" height="1" fill="#000"/></pattern>
+      <pattern id="vl" width="5" height="8" patternUnits="userSpaceOnUse"><rect width="1" height="8" fill="#000"/></pattern>
+      <pattern id="dl" width="12" height="12" patternUnits="userSpaceOnUse" patternTransform="rotate(30)"><rect width="2" height="12" fill="#203020"/></pattern>
+    </defs>
+    <rect width="100%" height="100%" fill="url(#h)"/>
+    <rect width="100%" height="100%" fill="url(#v)"/>
+    <rect x="100" y="0" width="400" height="${H}" fill="#fff"/>
+    <rect x="100" y="0" width="400" height="${H}" fill="url(#hl)"/>
+    <rect x="600" y="0" width="400" height="${H}" fill="#fff"/>
+    <rect x="600" y="0" width="400" height="${H}" fill="url(#vl)"/>
+    <rect x="1100" y="0" width="560" height="${H}" fill="#eee"/>
+    <rect x="1100" y="0" width="560" height="${H}" fill="url(#dl)"/>
+    <rect x="1790" y="0" width="610" height="${H}" fill="#fafafa"/>
+    ${bands.join('')}
+    ${text.join('')}
+  </svg>`);
+}
+
 const fixtures = [
+  ['boundary.png', async () => sharp(boundaryScene()).removeAlpha().png()],
   ['landscape.jpg', async () => (await photo(6000, 4000)).jpeg({ quality: 88 })],
   ['portrait.png', async () => (await photo(3000, 4500)).png({ compressionLevel: 6 })],
   ['transparent.png', async () => sharp(scene(2000, 2000, { transparent: true })).png()],
