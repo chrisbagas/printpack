@@ -25,6 +25,8 @@
   color: var(--text);
   background: var(--bg);
   -webkit-font-smoothing: antialiased;
+  /* Inter turns "3x2" into "3×2"; file names must show exactly as saved. */
+  font-feature-settings: 'calt' 0;
 }
 
 @media (prefers-color-scheme: dark) {

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { CropStage, MAX_ZOOM, type CropState } from './components/CropStage';
 import { ExportQueue, ExportResults, type QueueItem } from './components/ExportQueue';
 import { RatioPicker } from './components/RatioPicker';
+import { SellerPackPanel } from './components/SellerPackPanel';
 import { SizeList } from './components/SizeList';
 import { Uploader } from './components/Uploader';
 import { UpscaleDialog, type UpscaleItem } from './components/UpscaleDialog';
@@ -9,6 +10,7 @@ import { downloadBlob } from './lib/download';
 import { exportFileName, zipFileName } from './lib/filename';
 import { EngineHost } from './lib/engine';
 import { megapixels } from './lib/imageSize';
+import { limitsFromSearch } from './lib/marketplace';
 import { readSimulation } from './lib/simulate';
 import type { ExportedFile, ExportOptions, ExportProgress } from './lib/exportJobs';
 import { describeImage, validateFile, type LoadedImage } from './lib/image';
@@ -60,6 +62,8 @@ const freshCrop = (): CropState => ({ crop: { x: 0, y: 0 }, zoom: 1, pixels: nul
 const params = new URLSearchParams(window.location.search);
 const PREFERRED_ENGINE = params.get('engine') === 'main' ? 'main' : 'worker';
 const SIMULATION = readSimulation(window.location.search);
+/** Marketplace upload limits; ?maxUploads= and ?maxUploadMB= override them for testing. */
+const LIMITS = limitsFromSearch(window.location.search);
 const EXPORT_OPTIONS: ExportOptions = {
   maxArea: Number(params.get('canvasLimit')) || undefined,
 };
@@ -82,6 +86,15 @@ export default function App() {
   const [crops, setCrops] = useState<Record<string, CropState>>({});
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [pendingUpscale, setPendingUpscale] = useState<{ all: QueueItem[]; up: UpscaleItem[] } | null>(null);
+  const [mode, setMode] = useState<'files' | 'pack'>('files');
+  const [packBusy, setPackBusy] = useState(false);
+  const [packApproval, setPackApproval] = useState<{ up: UpscaleItem[]; resolve: (ok: boolean) => void } | null>(
+    null,
+  );
+  const requestPackApproval = useCallback(
+    (up: UpscaleItem[]) => new Promise<boolean>((resolve) => setPackApproval({ up, resolve })),
+    [],
+  );
   const [status, setStatus] = useState<Status>({ kind: 'idle' });
   const [results, setResults] = useState<Results | null>(null);
   const hostRef = useRef<EngineHost | null>(null);
@@ -168,7 +181,7 @@ export default function App() {
   const queue = [...catalog.values()].filter((item) => selected.has(item.target.key));
   const maxIn = maxPrintInches(cropPx);
   const cropLabel = `${cropPx.width.toLocaleString()} × ${cropPx.height.toLocaleString()} px`;
-  const working = status.kind === 'working';
+  const working = status.kind === 'working' || packBusy;
 
   const selectionCounts = Object.fromEntries(
     RATIO_IDS.map((id) => [id, queue.filter((q) => q.target.ratio.id === id).length]),
@@ -308,6 +321,27 @@ export default function App() {
         </section>
 
         <aside className="panel">
+          <div className="segmented mode-switch" role="radiogroup" aria-label="Export mode">
+            {(
+              [
+                ['files', 'Individual files'],
+                ['pack', 'Seller Pack'],
+              ] as const
+            ).map(([m, label]) => (
+              <button
+                key={m}
+                type="button"
+                role="radio"
+                aria-checked={mode === m}
+                className={mode === m ? 'is-on' : ''}
+                disabled={working}
+                onClick={() => setMode(m)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
           <RatioPicker
             ratioId={ratioId}
             orientation={orientation}
@@ -347,49 +381,83 @@ export default function App() {
             onClear={clearHere}
           />
 
-          <ExportQueue
-            items={queue}
-            currentGroup={group}
-            onRemove={(k) => toggle(k, false)}
-            onJump={jumpTo}
-          />
+          {mode === 'files' ? (
+            <>
+              <ExportQueue
+                items={queue}
+                currentGroup={group}
+                onRemove={(k) => toggle(k, false)}
+                onJump={jumpTo}
+              />
 
-          <button
-            type="button"
-            className="btn btn-primary btn-block"
-            onClick={onDownload}
-            disabled={working || queue.length === 0}
-            data-testid="download"
-          >
-            {working ? 'Rendering…' : queue.length > 1 ? `Download ZIP (${queue.length} files)` : 'Download JPG'}
-          </button>
-          {status.kind !== 'idle' && (
-            <p className={`status status-${status.kind}`} role="status" data-testid="status">
-              {status.message}
-            </p>
+              <button
+                type="button"
+                className="btn btn-primary btn-block"
+                onClick={onDownload}
+                disabled={working || queue.length === 0}
+                data-testid="download"
+              >
+                {working ? 'Rendering…' : queue.length > 1 ? `Download ZIP (${queue.length} files)` : 'Download JPG'}
+              </button>
+              {status.kind !== 'idle' && (
+                <p className={`status status-${status.kind}`} role="status" data-testid="status">
+                  {status.message}
+                </p>
+              )}
+              {results && status.kind === 'done' && <ExportResults files={results.files} zip={results.zip} />}
+            </>
+          ) : (
+            <SellerPackPanel
+              key={image.url}
+              fileName={image.fileName}
+              selected={queue}
+              host={() => hostRef.current}
+              exportOptions={EXPORT_OPTIONS}
+              limits={LIMITS}
+              requestUpscaleApproval={requestPackApproval}
+              onJump={(t) => {
+                setRatioId(t.ratio.id);
+                setOrientation(t.orientation);
+              }}
+              onBusyChange={setPackBusy}
+            />
           )}
-          {results && status.kind === 'done' && <ExportResults files={results.files} zip={results.zip} />}
         </aside>
       </div>
 
-      <UpscaleDialog
-        items={pendingUpscale?.up ?? null}
-        cropLabel={singleCropInDialog}
-        onCancel={() => setPendingUpscale(null)}
-        onConfirm={() => {
-          const all = pendingUpscale?.all ?? [];
-          setPendingUpscale(null);
-          void runExport(all);
-        }}
-        onSkip={
-          sharpRemainder.length > 0
-            ? () => {
-                setPendingUpscale(null);
-                void runExport(sharpRemainder);
-              }
-            : undefined
-        }
-      />
+      {packApproval ? (
+        <UpscaleDialog
+          items={packApproval.up}
+          cropLabel=""
+          onCancel={() => {
+            packApproval.resolve(false);
+            setPackApproval(null);
+          }}
+          onConfirm={() => {
+            packApproval.resolve(true);
+            setPackApproval(null);
+          }}
+        />
+      ) : (
+        <UpscaleDialog
+          items={pendingUpscale?.up ?? null}
+          cropLabel={singleCropInDialog}
+          onCancel={() => setPendingUpscale(null)}
+          onConfirm={() => {
+            const all = pendingUpscale?.all ?? [];
+            setPendingUpscale(null);
+            void runExport(all);
+          }}
+          onSkip={
+            sharpRemainder.length > 0
+              ? () => {
+                  setPendingUpscale(null);
+                  void runExport(sharpRemainder);
+                }
+              : undefined
+          }
+        />
+      )}
     </Shell>
   );
 }

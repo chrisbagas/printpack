@@ -25,6 +25,40 @@ Everything runs in the browser: images are never uploaded.
 "Full resolution" exports the crop at its own size, trimmed by at most a few
 pixels so the ratio is exact.
 
+### Seller Pack
+
+Switch to **Seller Pack** to prepare a digital-print listing (for example on Etsy):
+
+1. Select print sizes in each ratio and orientation you want to sell, adjusting
+   each crop as usual. The pack contains **one JPG per ratio and orientation**,
+   at the **largest size you selected** in it; buyers print every smaller size
+   of that shape from the same file. Upscaled files still need your approval.
+2. Give the artwork a name. It titles the printing guide and names the files
+   (`golden-hour_2x3_24x36in_7200x10800px.jpg`).
+3. **Build Seller Pack.** PrintPack renders the JPGs, then writes a
+   **buyer printing guide (PDF)** from the files it actually produced: their
+   names, pixel sizes and file sizes, which sizes each prints at 300 PPI, and
+   which sizes are only reachable by enlargement (with their real PPI). It never
+   lists a size larger than a file, and says plainly that enlarging doesn't add
+   detail.
+4. **Check the upload list.** It shows exactly what to upload, with real sizes
+   and ZIP contents, checked against the marketplace limits:
+   - Images are separate uploads when everything fits. When there are more
+     files than the listing allows, images are grouped into ZIPs (stored, up to
+     the size limit each). The guide is always its own upload and counts toward
+     the limit.
+   - If something is too large, PrintPack says which file and by how much, lets
+     you **preview a lower JPEG quality at 100%** and **rebuild**, then checks
+     again. If that still isn't enough, it suggests what to change (a smaller
+     largest size, fewer ratios). It never resizes, drops files or lowers
+     quality on its own.
+
+Limits live in `src/lib/marketplace.ts`. Etsy currently allows **5 files per
+digital listing, 20 MB each** ([Etsy help: How to Manage Your Digital
+Listings](https://help.etsy.com/hc/en-us/articles/115015628347-How-to-Manage-Your-Digital-Listings),
+checked November 2026). PrintPack reads 20 MB as 20,000,000 bytes, the stricter
+interpretation. `?maxUploads=` and `?maxUploadMB=` override the limits for testing.
+
 ### Output details
 
 - JPG, quality 0.92, sRGB, with the JFIF header set to **300 DPI**.
@@ -99,7 +133,12 @@ The tests generate their own images (`npm run fixtures`, into
 | Strip seams | `boundary.png` (gradients, 1 px lines on every 7th row, fine vertical and diagonal lines, colour bands, text) rendered on one canvas and in strips, then compared row by row for seams, colour shifts and missing or doubled rows, plus the lines checked against their known positions |
 | Failures | Worker script fails to load, worker without canvas support, export error, worker crash, damaged file, image too large to open, then recovery with no stale progress or disabled controls |
 | Workflow | Repeated exports, loading another image after an export, upscale confirm/cancel/skip |
+| Seller Pack | One file per ratio/orientation at the largest selected size; guide PDF text (via `pdftotext`) matches the downloaded files' names, pixel sizes and file sizes and lists no unsupported sizes; images zipped when uploads exceed the limit, guide counted; oversized files reported with their real sizes, previewed and rebuilt at lower quality; too-many-uploads advice; stale-pack detection; individual exports still work |
 | Responsiveness | Longest main-thread task during a 96 MP, 8-file export in the worker (Chromium only) |
+
+Tests that read the printing guide need `pdftotext` (from poppler-utils, for
+example `apt install poppler-utils` or `brew install poppler`) and are skipped
+without it.
 
 #### Test switches
 
@@ -113,6 +152,7 @@ These URL parameters exist for the browser tests and for debugging:
 | `?simulate=worker-no-canvas` | The worker starts without canvas support |
 | `?simulate=export-error` | The first export fails with an error |
 | `?simulate=worker-crash` | The worker crashes during the first export |
+| `?maxUploads=3&maxUploadMB=1.5` | Override the marketplace upload limits used by Seller Pack |
 
 ## Browser support and device checks
 
@@ -140,4 +180,6 @@ Before relying on PrintPack on phones and tablets, check these on real devices:
 ## Stack
 
 React 19, TypeScript, Vite, [react-easy-crop](https://github.com/ValentinH/react-easy-crop)
-for the crop UI, and [fflate](https://github.com/101arrowz/fflate) for ZIPs.
+for the crop UI, [fflate](https://github.com/101arrowz/fflate) for ZIPs, and
+[pdf-lib](https://github.com/Hopding/pdf-lib) for the printing guide (loaded
+only when a Seller Pack is built).
