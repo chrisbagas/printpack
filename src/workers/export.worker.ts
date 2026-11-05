@@ -17,7 +17,11 @@ self.onmessage = async (e: MessageEvent<Request>) => {
   try {
     switch (req.type) {
       case 'ping':
-        reply({ id: req.id, type: 'pong', canvas: canvas2dAvailable() && typeof createImageBitmap === 'function' });
+        reply({
+          id: req.id,
+          type: 'pong',
+          canvas: !req.simulateNoCanvas && canvas2dAvailable() && typeof createImageBitmap === 'function',
+        });
         break;
       case 'load': {
         bitmap?.close();

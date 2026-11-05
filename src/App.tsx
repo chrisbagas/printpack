@@ -7,7 +7,9 @@ import { Uploader } from './components/Uploader';
 import { UpscaleDialog, type UpscaleItem } from './components/UpscaleDialog';
 import { downloadBlob } from './lib/download';
 import { exportFileName, zipFileName } from './lib/filename';
-import { createEngine, type Engine } from './lib/engine';
+import { EngineHost } from './lib/engine';
+import { megapixels } from './lib/imageSize';
+import { readSimulation } from './lib/simulate';
 import type { ExportedFile, ExportOptions, ExportProgress } from './lib/exportJobs';
 import { describeImage, validateFile, type LoadedImage } from './lib/image';
 import {
@@ -53,12 +55,16 @@ const freshCrop = (): CropState => ({ crop: { x: 0, y: 0 }, zoom: 1, pixels: nul
  * Debug switches, used by the browser tests:
  *   ?engine=main       render on the page instead of in a worker
  *   ?canvasLimit=N     pretend canvases can't exceed N pixels (iOS Safari: 16777216)
+ *   ?simulate=…        force a failure; see lib/simulate.ts
  */
 const params = new URLSearchParams(window.location.search);
 const PREFERRED_ENGINE = params.get('engine') === 'main' ? 'main' : 'worker';
+const SIMULATION = readSimulation(window.location.search);
 const EXPORT_OPTIONS: ExportOptions = {
   maxArea: Number(params.get('canvasLimit')) || undefined,
 };
+/** Simulated export failures apply to the first export only, so recovery can be tested. */
+let simulateNextExport = SIMULATION === 'export-error' || SIMULATION === 'worker-crash';
 
 function describeProgress(p: ExportProgress): string {
   if (!p.job) return 'Packing ZIP…';
@@ -78,19 +84,19 @@ export default function App() {
   const [pendingUpscale, setPendingUpscale] = useState<{ all: QueueItem[]; up: UpscaleItem[] } | null>(null);
   const [status, setStatus] = useState<Status>({ kind: 'idle' });
   const [results, setResults] = useState<Results | null>(null);
-  const engineRef = useRef<Promise<Engine> | null>(null);
-
-  function getEngine(): Promise<Engine> {
-    engineRef.current ??= createEngine(PREFERRED_ENGINE).then((e) => {
-      // Exposed for the browser tests.
-      document.documentElement.dataset.engine = e.kind;
-      return e;
-    });
-    return engineRef.current;
-  }
+  const hostRef = useRef<EngineHost | null>(null);
 
   useEffect(() => {
-    void getEngine();
+    const host = new EngineHost(PREFERRED_ENGINE, SIMULATION, (kind) => {
+      // Exposed for the browser tests.
+      document.documentElement.dataset.engine = kind;
+    });
+    hostRef.current = host;
+    host.warmUp();
+    return () => {
+      host.dispose();
+      if (hostRef.current === host) hostRef.current = null;
+    };
   }, []);
 
   useEffect(() => () => {
@@ -106,8 +112,9 @@ export default function App() {
     setLoading(true);
     setLoadError(null);
     try {
-      const engine = await getEngine();
-      const img = describeImage(file, await engine.load(file));
+      const host = hostRef.current;
+      if (!host) return;
+      const img = describeImage(file, await host.load(file));
       const o = orientationOf(img.width, img.height);
       setImage(img);
       setRatioId(DEFAULT_RATIO);
@@ -197,14 +204,17 @@ export default function App() {
     setResults(null);
     setStatus({ kind: 'working', message: 'Starting…' });
     try {
-      const engine = await getEngine();
+      const host = hostRef.current;
+      if (!host) return;
       const jobs = items.map(({ fileName, crop, target }) => ({
         fileName,
         crop,
         width: target.widthPx,
         height: target.heightPx,
       }));
-      const out = await engine.export(jobs, zipFileName(image.base), EXPORT_OPTIONS, (p) =>
+      const simulate = simulateNextExport ? (SIMULATION as 'export-error' | 'worker-crash') : undefined;
+      simulateNextExport = false;
+      const out = await host.export(jobs, zipFileName(image.base), { ...EXPORT_OPTIONS, simulate }, (p) =>
         setStatus({ kind: 'working', message: describeProgress(p) }),
       );
       downloadBlob(out.blob, out.fileName);
@@ -251,12 +261,13 @@ export default function App() {
   return (
     <Shell
       action={
-        <label className="btn btn-ghost">
-          Change image
+        <label className={`btn btn-ghost${working || loading ? ' is-disabled' : ''}`} aria-disabled={working || loading}>
+          {loading ? 'Opening…' : 'Change image'}
           <input
             type="file"
             accept=".jpg,.jpeg,.png,image/jpeg,image/png"
             hidden
+            disabled={working || loading}
             data-testid="replace-input"
             onChange={(e) => {
               const f = e.target.files?.[0];
@@ -285,7 +296,8 @@ export default function App() {
           <p className="file-meta" data-testid="file-meta">
             <span className="file-name">{image.fileName}</span>
             <span>
-              {image.width.toLocaleString()} × {image.height.toLocaleString()} px · {formatBytes(image.bytes)}
+              {image.width.toLocaleString()} × {image.height.toLocaleString()} px ({megapixels(image.width, image.height)}) ·{' '}
+              {formatBytes(image.bytes)}
             </span>
           </p>
           {loadError && (

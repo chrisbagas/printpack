@@ -1,8 +1,16 @@
 import { decodeImage } from './decode';
 import { exportJobs, type ExportJob, type ExportOptions, type ExportOutput, type ExportProgress } from './exportJobs';
+import type { Simulation } from './simulate';
 import type { ImageInfo, Request, Response } from '../workers/protocol';
 
 export type { ImageInfo };
+
+export class EngineStoppedError extends Error {
+  constructor(message = 'The export was stopped.') {
+    super(message);
+    this.name = 'EngineStoppedError';
+  }
+}
 
 /**
  * Decodes, renders and zips images. Runs in a Web Worker when the browser
@@ -11,6 +19,8 @@ export type { ImageInfo };
  */
 export interface Engine {
   readonly kind: 'worker' | 'main';
+  /** False once the engine crashed or was disposed; it can't be used again. */
+  readonly alive: boolean;
   load(file: File): Promise<ImageInfo>;
   export(
     jobs: ExportJob[],
@@ -23,47 +33,72 @@ export interface Engine {
 
 type DistributiveOmit<T, K extends keyof T> = T extends unknown ? Omit<T, K> : never;
 
+const CRASH_MESSAGE =
+  'The export stopped unexpectedly, which usually means the browser ran out of memory. ' +
+  'Your image is still loaded: try again, or choose fewer or smaller sizes.';
+
 class WorkerEngine implements Engine {
   readonly kind = 'worker';
+  alive = true;
   private nextId = 1;
-  private readonly pending = new Map<number, (msg: Response) => void>();
+  private readonly pending = new Map<number, { onMessage: (msg: Response) => void; reject: (e: Error) => void }>();
   private readonly worker: Worker;
 
-  constructor() {
-    this.worker = new Worker(new URL('../workers/export.worker.ts', import.meta.url), { type: 'module' });
-    this.worker.onmessage = (e: MessageEvent<Response>) => this.pending.get(e.data.id)?.(e.data);
-    // A crash (for example, running out of memory) fails every request in flight.
+  constructor(simulate: Simulation | null) {
+    this.worker =
+      simulate === 'worker-load-fail'
+        ? new Worker(new URL('/missing-export-worker.js', location.href), { type: 'module' })
+        : new Worker(new URL('../workers/export.worker.ts', import.meta.url), { type: 'module' });
+    this.worker.onmessage = (e: MessageEvent<Response>) => this.pending.get(e.data.id)?.onMessage(e.data);
+    // A script that fails to load, or an uncaught error, ends this worker for good.
     this.worker.onerror = (e) => {
       e.preventDefault();
-      const message = e.message || 'The export worker stopped unexpectedly. Try a smaller size.';
-      for (const [id, fn] of [...this.pending]) fn({ id, type: 'error', message });
+      this.stop(new Error(CRASH_MESSAGE));
     };
+    this.worker.onmessageerror = () => this.stop(new Error(CRASH_MESSAGE));
+  }
+
+  /** Terminate and settle every request still in flight. */
+  private stop(reason: Error) {
+    if (!this.alive) return;
+    this.alive = false;
+    this.worker.terminate();
+    const waiting = [...this.pending.values()];
+    this.pending.clear();
+    for (const p of waiting) p.reject(reason);
   }
 
   /** Send a request; `onMessage` returns a value to settle, or undefined to keep listening. */
-  private call<T>(req: DistributiveOmit<Request, 'id'>, onMessage: (msg: Response) => T | undefined, transfer?: Transferable[]) {
+  private call<T>(req: DistributiveOmit<Request, 'id'>, onMessage: (msg: Response) => T | undefined) {
+    if (!this.alive) return Promise.reject(new EngineStoppedError(CRASH_MESSAGE));
     const id = this.nextId++;
     return new Promise<T>((resolve, reject) => {
-      this.pending.set(id, (msg) => {
-        if (msg.type === 'error') {
-          this.pending.delete(id);
-          reject(new Error(msg.message));
-          return;
-        }
-        const result = onMessage(msg);
-        if (result !== undefined) {
-          this.pending.delete(id);
-          resolve(result);
-        }
+      this.pending.set(id, {
+        reject,
+        onMessage: (msg) => {
+          if (msg.type === 'error') {
+            this.pending.delete(id);
+            reject(new Error(msg.message));
+            return;
+          }
+          const result = onMessage(msg);
+          if (result !== undefined) {
+            this.pending.delete(id);
+            resolve(result);
+          }
+        },
       });
-      this.worker.postMessage({ ...req, id } as Request, transfer ?? []);
+      this.worker.postMessage({ ...req, id } as Request);
     });
   }
 
-  ping(timeoutMs: number): Promise<boolean> {
-    const pong = this.call({ type: 'ping' }, (m) => (m.type === 'pong' ? m.canvas : undefined));
-    const timeout = new Promise<boolean>((r) => setTimeout(() => r(false), timeoutMs));
-    return Promise.race([pong.catch(() => false), timeout]);
+  ping(timeoutMs: number, simulateNoCanvas: boolean): Promise<boolean> {
+    const pong = this.call({ type: 'ping', simulateNoCanvas }, (m) => (m.type === 'pong' ? m.canvas : undefined));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<boolean>((r) => {
+      timer = setTimeout(() => r(false), timeoutMs);
+    });
+    return Promise.race([pong.catch(() => false), timeout]).finally(() => clearTimeout(timer));
   }
 
   load(file: File) {
@@ -78,41 +113,126 @@ class WorkerEngine implements Engine {
   }
 
   dispose() {
-    this.worker.terminate();
+    this.stop(new EngineStoppedError());
   }
 }
 
 class MainThreadEngine implements Engine {
   readonly kind = 'main';
+  alive = true;
   private bitmap: ImageBitmap | null = null;
 
   async load(file: File) {
     this.bitmap?.close();
     this.bitmap = null;
     const decoded = await decodeImage(file, file.name);
+    if (!this.alive) {
+      decoded.bitmap.close();
+      throw new EngineStoppedError();
+    }
     this.bitmap = decoded.bitmap;
     return { width: decoded.width, height: decoded.height, hasTransparency: decoded.hasTransparency };
   }
 
   async export(jobs: ExportJob[], zipName: string, options: ExportOptions, onProgress: (p: ExportProgress) => void) {
     if (!this.bitmap) throw new Error('No image loaded.');
-    return exportJobs(this.bitmap, jobs, zipName, options, (p) => onProgress(p));
+    // A crash can't be simulated on the page; treat it as an ordinary failure.
+    const simulate = options.simulate === 'worker-crash' ? 'export-error' : options.simulate;
+    return exportJobs(this.bitmap, jobs, zipName, { ...options, simulate }, onProgress);
   }
 
   dispose() {
+    this.alive = false;
     this.bitmap?.close();
+    this.bitmap = null;
   }
 }
 
-export async function createEngine(prefer: 'worker' | 'main' = 'worker'): Promise<Engine> {
+async function createEngine(prefer: 'worker' | 'main', simulate: Simulation | null): Promise<Engine> {
   if (prefer === 'worker' && typeof Worker !== 'undefined') {
+    let engine: WorkerEngine | null = null;
     try {
-      const engine = new WorkerEngine();
-      if (await engine.ping(3000)) return engine;
-      engine.dispose();
+      engine = new WorkerEngine(simulate);
+      if (await engine.ping(5000, simulate === 'worker-no-canvas')) return engine;
     } catch {
       // Fall through to the main thread.
     }
+    engine?.dispose();
   }
   return new MainThreadEngine();
+}
+
+/**
+ * Owns the engine for the page. Runs one operation at a time (so loading a
+ * new image can't pull pixels out from under an export), replaces an engine
+ * that crashed, and reloads the current image into the replacement.
+ */
+export class EngineHost {
+  private engine: Promise<Engine> | null = null;
+  private file: File | null = null;
+  private loadedInto: Engine | null = null;
+  private queue: Promise<unknown> = Promise.resolve();
+  private disposed = false;
+  private readonly prefer: 'worker' | 'main';
+  private readonly simulate: Simulation | null;
+  private readonly onKind: (kind: Engine['kind']) => void;
+
+  constructor(prefer: 'worker' | 'main', simulate: Simulation | null, onKind: (kind: Engine['kind']) => void = () => {}) {
+    this.prefer = prefer;
+    this.simulate = simulate;
+    this.onKind = onKind;
+  }
+
+  private async current(): Promise<Engine> {
+    if (this.disposed) throw new EngineStoppedError();
+    if (this.engine) {
+      const e = await this.engine;
+      if (e.alive) return e;
+    }
+    this.engine = createEngine(this.prefer, this.simulate).then((e) => {
+      this.onKind(e.kind);
+      return e;
+    });
+    return this.engine;
+  }
+
+  /** Start the engine early, so the first upload doesn't wait for it. */
+  warmUp(): void {
+    void this.enqueue(() => this.current());
+  }
+
+  private enqueue<T>(op: () => Promise<T>): Promise<T> {
+    const run = this.queue.then(op, op);
+    this.queue = run.catch(() => undefined);
+    return run;
+  }
+
+  load(file: File): Promise<ImageInfo> {
+    return this.enqueue(async () => {
+      const engine = await this.current();
+      this.loadedInto = null;
+      const info = await engine.load(file);
+      this.file = file;
+      this.loadedInto = engine;
+      return info;
+    });
+  }
+
+  export(jobs: ExportJob[], zipName: string, options: ExportOptions, onProgress: (p: ExportProgress) => void) {
+    return this.enqueue(async () => {
+      const engine = await this.current();
+      if (this.loadedInto !== engine) {
+        if (!this.file) throw new Error('No image loaded.');
+        await engine.load(this.file); // after a crash, the new engine needs the image again
+        this.loadedInto = engine;
+      }
+      return engine.export(jobs, zipName, options, onProgress);
+    });
+  }
+
+  dispose(): void {
+    this.disposed = true;
+    void this.engine?.then((e) => e.dispose());
+    this.engine = null;
+  }
 }

@@ -45,7 +45,10 @@ function opaqueCanvas(width: number, height: number, background: string, maxArea
     throw new CanvasLimitError(width, height);
   }
   const ctx = get2d(canvas, { alpha: false });
-  if (!ctx || canvas.width !== width || canvas.height !== height) throw new CanvasLimitError(width, height);
+  if (!ctx || canvas.width !== width || canvas.height !== height) {
+    releaseCanvas(canvas);
+    throw new CanvasLimitError(width, height);
+  }
   ctx.fillStyle = background;
   ctx.fillRect(0, 0, width, height);
   // Browsers fail silently past their canvas limit: check a pixel actually landed.
@@ -89,14 +92,19 @@ function drawScaled(
   maxArea: number,
 ): { canvas: AnyCanvas; ctx: Any2D } {
   let cur = opaqueCanvas(outW << k, outH << k, background, maxArea);
-  cur.ctx.drawImage(source, sx, sy, sw, sh, 0, 0, outW << k, outH << k);
-  for (let i = k - 1; i >= 0; i--) {
-    const next = opaqueCanvas(outW << i, outH << i, background, maxArea);
-    next.ctx.drawImage(cur.canvas, 0, 0, outW << i, outH << i);
+  try {
+    cur.ctx.drawImage(source, sx, sy, sw, sh, 0, 0, outW << k, outH << k);
+    for (let i = k - 1; i >= 0; i--) {
+      const next = opaqueCanvas(outW << i, outH << i, background, maxArea);
+      next.ctx.drawImage(cur.canvas, 0, 0, outW << i, outH << i);
+      releaseCanvas(cur.canvas);
+      cur = next;
+    }
+    return cur;
+  } catch (err) {
     releaseCanvas(cur.canvas);
-    cur = next;
+    throw err;
   }
-  return cur;
 }
 
 /**

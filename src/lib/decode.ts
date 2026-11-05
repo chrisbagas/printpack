@@ -1,4 +1,5 @@
 import { createCanvas, get2d, releaseCanvas } from './canvas';
+import { MAX_DECODE_PIXELS, megapixels, readImageSize } from './imageSize';
 
 export interface DecodedImage {
   bitmap: ImageBitmap;
@@ -39,14 +40,41 @@ function bitmapHasTransparency(bitmap: ImageBitmap): boolean {
 }
 
 export async function decodeImage(file: Blob, fileName: string): Promise<DecodedImage> {
+  const header = await readImageSize(file);
+  const size = header ? `${header.width.toLocaleString('en-US')} × ${header.height.toLocaleString('en-US')} px (${megapixels(header.width, header.height)})` : null;
+  if (header && header.width * header.height > MAX_DECODE_PIXELS) {
+    throw new Error(
+      `“${fileName}” is ${size}, more than PrintPack can open in a browser ` +
+        `(${megapixels(MAX_DECODE_PIXELS, 1)} max). Save a smaller copy, for example 12,000 px on the long side, and try that.`,
+    );
+  }
+
   let bitmap: ImageBitmap;
   try {
     bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
   } catch {
     throw new Error(
-      `Couldn't open “${fileName}”. The file may be damaged, or too large for this browser to decode.`,
+      size
+        ? `This browser couldn't open “${fileName}” (${size}). It's probably more than this device has memory for. ` +
+            `Try a smaller copy of the image, or a desktop browser.`
+        : `Couldn't open “${fileName}”. The file may be damaged or not a real JPG or PNG.`,
     );
   }
+
+  // Some browsers quietly decode huge images at reduced size; print sizes would be wrong.
+  if (header) {
+    const same = bitmap.width === header.width && bitmap.height === header.height;
+    const rotated = bitmap.width === header.height && bitmap.height === header.width;
+    if (!same && !rotated) {
+      const got = `${bitmap.width} × ${bitmap.height}`;
+      bitmap.close();
+      throw new Error(
+        `This browser opened “${fileName}” at reduced size (${got} px instead of ${size}), ` +
+          `so print sizes would be wrong. Try a smaller copy of the image, or a desktop browser.`,
+      );
+    }
+  }
+
   const hasTransparency = (await pngMayHaveAlpha(file)) && bitmapHasTransparency(bitmap);
   return { bitmap, width: bitmap.width, height: bitmap.height, hasTransparency };
 }

@@ -7,7 +7,7 @@ export interface ImageInfo {
 }
 
 export type Request =
-  | { id: number; type: 'ping' }
+  | { id: number; type: 'ping'; simulateNoCanvas?: boolean }
   | { id: number; type: 'load'; file: Blob; fileName: string }
   | { id: number; type: 'export'; jobs: ExportJob[]; zipName: string; options: ExportOptions };
 
