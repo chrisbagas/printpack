@@ -3,11 +3,13 @@ import { RATIO_IDS, RATIOS, ratioLabel, type Orientation, type RatioId } from '.
 interface Props {
   ratioId: RatioId;
   orientation: Orientation;
+  /** Selected exports per ratio, shown as a small count. */
+  counts?: Partial<Record<RatioId, number>>;
   onRatio: (id: RatioId) => void;
   onOrientation: (o: Orientation) => void;
 }
 
-export function RatioPicker({ ratioId, orientation, onRatio, onOrientation }: Props) {
+export function RatioPicker({ ratioId, orientation, counts = {}, onRatio, onOrientation }: Props) {
   return (
     <div className="field">
       <span className="field-label" id="ratio-label">
@@ -24,6 +26,11 @@ export function RatioPicker({ ratioId, orientation, onRatio, onOrientation }: Pr
             onClick={() => onRatio(id)}
           >
             {ratioLabel(RATIOS[id], orientation)}
+            {!!counts[id] && (
+              <span className="count" aria-label={`${counts[id]} selected`}>
+                {counts[id]}
+              </span>
+            )}
           </button>
         ))}
       </div>

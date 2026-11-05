@@ -12,9 +12,11 @@ interface Props {
   cropLabel: string;
   onCancel: () => void;
   onConfirm: () => void;
+  /** Offered when other selected sizes don't need upscaling. */
+  onSkip?: () => void;
 }
 
-export function UpscaleDialog({ items, cropLabel, onCancel, onConfirm }: Props) {
+export function UpscaleDialog({ items, cropLabel, onCancel, onConfirm, onSkip }: Props) {
   const ref = useRef<HTMLDialogElement>(null);
 
   useEffect(() => {
@@ -41,7 +43,7 @@ export function UpscaleDialog({ items, cropLabel, onCancel, onConfirm }: Props) 
             {items.length === 1 ? 'This size will be upscaled' : `${items.length} sizes will be upscaled`}
           </h2>
           <p>
-            Your crop is {cropLabel}. To print at 300 PPI, the following{' '}
+            {cropLabel ? `Your crop is ${cropLabel}. ` : ''}To print at 300 PPI, the following{' '}
             {items.length === 1 ? 'size needs' : 'sizes need'} more pixels than the crop has, so the
             image will be enlarged. Prints may look soft.
           </p>
@@ -60,6 +62,11 @@ export function UpscaleDialog({ items, cropLabel, onCancel, onConfirm }: Props) 
             <button type="button" className="btn" onClick={onCancel} autoFocus>
               Cancel
             </button>
+            {onSkip && (
+              <button type="button" className="btn" onClick={onSkip}>
+                Skip {items.length === 1 ? 'this size' : 'these sizes'}
+              </button>
+            )}
             <button type="button" className="btn btn-warn" onClick={onConfirm}>
               Upscale and download
             </button>

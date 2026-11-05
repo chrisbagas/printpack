@@ -13,6 +13,25 @@ export async function upload(page: Page, fixture: string) {
   await page.getByTestId('crop-px').waitFor();
 }
 
+export async function pickRatio(page: Page, label: string) {
+  await page.getByRole('radio', { name: new RegExp(`^${label}`) }).click();
+}
+
+export function sizeRow(page: Page, name: string | RegExp) {
+  return page.locator('.size-row', { has: page.getByRole('checkbox', { name }) });
+}
+
+export async function selectSize(page: Page, name: string | RegExp) {
+  await page.getByRole('checkbox', { name }).check();
+}
+
+/** Clear the whole export queue, then select a single size. */
+export async function selectOnly(page: Page, name: string | RegExp) {
+  const remove = page.getByRole('button', { name: /^Remove / });
+  while ((await remove.count()) > 0) await remove.first().click();
+  await selectSize(page, name);
+}
+
 export async function cropPx(page: Page): Promise<[number, number]> {
   const text = (await page.getByTestId('crop-px').textContent()) ?? '';
   const [w, h] = text.replace(/,/g, '').match(/\d+/g)!.map(Number);

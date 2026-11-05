@@ -1,5 +1,16 @@
 import { expect, test, type Page } from '@playwright/test';
-import { cropPx, inspectJpeg, near, record, sampleRgb, saveDownload, upload } from './helpers';
+import {
+  cropPx,
+  inspectJpeg,
+  near,
+  pickRatio,
+  record,
+  sampleRgb,
+  saveDownload,
+  selectOnly,
+  sizeRow,
+  upload,
+} from './helpers';
 
 const RED = [255, 0, 0];
 const GREEN = [0, 255, 0];
@@ -7,17 +18,6 @@ const BLUE = [0, 0, 255];
 const YELLOW = [255, 255, 0];
 const WHITE = [255, 255, 255];
 
-async function pickRatio(page: Page, label: string) {
-  await page.getByRole('radio', { name: label, exact: true }).click();
-}
-
-function sizeRow(page: Page, name: string | RegExp) {
-  return page.locator('.size-row', { has: page.getByRole('radio', { name }) });
-}
-
-async function pickSize(page: Page, name: string | RegExp) {
-  await page.getByRole('radio', { name }).check();
-}
 
 /** Click download and, if `confirmUpscale`, accept the warning first. */
 async function download(page: Page, { confirmUpscale = false } = {}) {
@@ -52,11 +52,11 @@ function expectPrintReady(info: { format: string; dpi: unknown; hasAlpha: boolea
 test('landscape JPG: defaults to landscape, exports exact 300 PPI sizes', async ({ page }, ti) => {
   await upload(page, 'landscape.jpg');
   await expect(page.getByRole('radio', { name: 'Landscape' })).toHaveAttribute('aria-checked', 'true');
-  await expect(page.getByRole('radio', { name: '5:4', exact: true })).toHaveAttribute('aria-checked', 'true');
+  await expect(page.getByRole('radio', { name: /^5:4/ })).toHaveAttribute('aria-checked', 'true');
   expect(await cropPx(page)).toEqual([5000, 4000]);
   await expect(page.getByTestId('max-print')).toHaveText('16.7 × 13.3 in');
 
-  await pickSize(page, /^10 × 8 in/);
+  await selectOnly(page, /^10 × 8 in/);
   const a = await download(page);
   expect(a.info.name).toBe('landscape_5x4_10x8in_3000x2400px.jpg');
   expect([a.info.width, a.info.height]).toEqual([3000, 2400]);
@@ -67,7 +67,7 @@ test('landscape JPG: defaults to landscape, exports exact 300 PPI sizes', async 
   await pickRatio(page, '3:2');
   expect(await cropPx(page)).toEqual([6000, 4000]);
   await expect(page.getByTestId('max-print')).toHaveText('20 × 13.3 in');
-  await pickSize(page, /Full resolution/);
+  await selectOnly(page, /Full resolution/);
   const b = await download(page);
   expect(b.info.name).toBe('landscape_3x2_full_20x13.3in_6000x4000px.jpg');
   expect([b.info.width, b.info.height]).toEqual([6000, 4000]);
@@ -97,7 +97,7 @@ test('portrait PNG: native size downloads directly, larger size warns first', as
   expect(await cropPx(page)).toEqual([3000, 4500]);
   await expect(page.getByTestId('max-print')).toHaveText('10 × 15 in');
 
-  await pickSize(page, /^10 × 15 in/);
+  await selectOnly(page, /^10 × 15 in/);
   await expect(sizeRow(page, /^10 × 15 in/)).toContainText('300 PPI');
   const a = await download(page);
   expect(a.info.name).toBe('portrait_2x3_10x15in_3000x4500px.jpg');
@@ -106,7 +106,7 @@ test('portrait PNG: native size downloads directly, larger size warns first', as
   record(ti.title, 'portrait.png', a.info, { ms: a.ms });
 
   // 12×18 needs 3600×5400: cancelling the warning must not download anything.
-  await pickSize(page, /^12 × 18 in/);
+  await selectOnly(page, /^12 × 18 in/);
   let downloaded = false;
   page.once('download', () => (downloaded = true));
   await page.getByRole('button', { name: 'Download JPG' }).click();
@@ -130,7 +130,7 @@ test('transparent PNG: transparency is flattened onto white', async ({ page }, t
   await upload(page, 'transparent.png');
   await expect(page.getByTestId('alpha-note')).toBeVisible();
   expect(await cropPx(page)).toEqual([1600, 2000]);
-  await pickSize(page, /Full resolution/);
+  await selectOnly(page, /Full resolution/);
   const a = await download(page);
   expect([a.info.width, a.info.height]).toEqual([1600, 2000]);
   expectPrintReady(a.info);
@@ -149,14 +149,14 @@ test('large 96 MP JPG: exports 36×24 in and full resolution', async ({ page }, 
   expect(await cropPx(page)).toEqual([12000, 8000]);
   await expect(page.getByTestId('max-print')).toHaveText('40 × 26.7 in');
 
-  await pickSize(page, /^36 × 24 in/);
+  await selectOnly(page, /^36 × 24 in/);
   const a = await download(page);
   expect(a.info.name).toBe('large_3x2_36x24in_10800x7200px.jpg');
   expect([a.info.width, a.info.height]).toEqual([10800, 7200]);
   expectPrintReady(a.info);
   record(ti.title, 'large.jpg', a.info, { ms: a.ms });
 
-  await pickSize(page, /Full resolution/);
+  await selectOnly(page, /Full resolution/);
   const b = await download(page);
   expect([b.info.width, b.info.height]).toEqual([12000, 8000]);
   expectPrintReady(b.info);
@@ -174,7 +174,7 @@ test('small JPG: every standard size is flagged as an upscale', async ({ page },
   }
   await expect(sizeRow(page, /Full resolution/)).toContainText('300 PPI');
 
-  await pickSize(page, /^5 × 4 in/);
+  await selectOnly(page, /^5 × 4 in/);
   const a = await download(page, { confirmUpscale: true });
   expect([a.info.width, a.info.height]).toEqual([1500, 1200]);
   expectPrintReady(a.info);
@@ -187,7 +187,7 @@ test('EXIF-rotated JPG: exported upright', async ({ page }, ti) => {
   await expect(page.getByRole('radio', { name: 'Portrait' })).toHaveAttribute('aria-checked', 'true');
   await pickRatio(page, '3:4');
   expect(await cropPx(page)).toEqual([3000, 4000]);
-  await pickSize(page, /Full resolution/);
+  await selectOnly(page, /Full resolution/);
   const a = await download(page);
   expect([a.info.width, a.info.height]).toEqual([3000, 4000]);
   // Stored top-left (red) rotates 90° clockwise to the top-right.
