@@ -1,52 +1,9 @@
-import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { expect, test, type Page } from '@playwright/test';
-import { unzipSync } from 'fflate';
-import {
-  inspectBuffer,
-  near,
-  outDir,
-  pickRatio,
-  record,
-  sampleRgb,
-  saveDownload,
-  selectOnly,
-  selectSize,
-  type ExportInfo,
-} from './helpers';
+import { readFileSync, statSync } from 'node:fs';
+import { expect, test } from '@playwright/test';
+import { inspectBuffer, near, pickRatio, record, sampleRgb, selectOnly, selectSize, type ExportInfo } from './helpers';
+import { downloadFile, expectPrintReady, openZip } from './zip';
 
 const WHITE = [255, 255, 255];
-
-/** Click download (accepting or skipping an upscale warning) and return the saved file. */
-async function downloadFile(page: Page, upscale: 'none' | 'confirm' | 'skip' = 'none') {
-  const dl = page.waitForEvent('download', { timeout: 170_000 });
-  const started = Date.now();
-  await page.getByTestId('download').click();
-  if (upscale !== 'none') {
-    const dialog = page.getByTestId('upscale-dialog');
-    await expect(dialog).toBeVisible();
-    await dialog.getByRole('button', { name: upscale === 'confirm' ? 'Upscale and download' : /^Skip/ }).click();
-  }
-  const download = await dl;
-  const file = await saveDownload(download);
-  await expect(page.getByTestId('status')).toContainText('Downloaded');
-  return { file, name: download.suggestedFilename(), ms: Date.now() - started };
-}
-
-/** Unzip, write each entry next to the ZIP, and inspect it. */
-async function openZip(file: string): Promise<Map<string, ExportInfo & { buf: Buffer }>> {
-  const entries = unzipSync(new Uint8Array(readFileSync(file)));
-  const out = new Map<string, ExportInfo & { buf: Buffer }>();
-  const dir = join(outDir(), 'unzipped');
-  mkdirSync(dir, { recursive: true });
-  for (const [name, data] of Object.entries(entries)) {
-    const buf = Buffer.from(data);
-    const path = join(dir, name);
-    writeFileSync(path, buf);
-    out.set(name, { ...(await inspectBuffer(buf, path)), buf });
-  }
-  return out;
-}
 
 /** Log the ZIP itself in the export report. */
 function recordZip(testName: string, source: string, zip: { file: string; name: string; ms: number }, entries: number) {
@@ -61,12 +18,6 @@ function recordZip(testName: string, source: string, zip: { file: string; name: 
     hasAlpha: false,
   };
   record(testName, source, info, { ms: zip.ms, entries });
-}
-
-function expectPrintReady(info: ExportInfo, width: number, height: number) {
-  expect(info.format).toBe('jpeg');
-  expect([info.width, info.height]).toEqual([width, height]);
-  expect(info.dpi).toEqual({ units: 1, x: 300, y: 300 });
 }
 
 test('ZIP across two ratios, each with its own crop', async ({ page }, ti) => {

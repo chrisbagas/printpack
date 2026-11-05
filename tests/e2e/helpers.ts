@@ -7,8 +7,8 @@ export const FIXTURES = join(process.cwd(), 'tests', 'fixtures');
 export const OUT_DIR = join(process.cwd(), 'test-results', 'exports');
 export const REPORT_PATH = join(process.cwd(), 'test-results', 'export-report.jsonl');
 
-export async function upload(page: Page, fixture: string) {
-  await page.goto('/');
+export async function upload(page: Page, fixture: string, query = '') {
+  await page.goto(`/${query}`);
   await page.getByTestId('file-input').setInputFiles(join(FIXTURES, fixture));
   await page.getByTestId('crop-px').waitFor();
 }
@@ -123,4 +123,54 @@ export function record(testName: string, source: string, info: ExportInfo, extra
 /** Rough colour match: each channel within `tol`. */
 export function near(rgb: number[], target: number[], tol = 40) {
   return rgb.every((v, i) => Math.abs(v - target[i]) <= tol);
+}
+
+export interface RawImage {
+  data: Buffer;
+  width: number;
+  height: number;
+}
+
+/** Decode to 8-bit RGB. */
+export async function decodeRgb(file: string | Buffer): Promise<RawImage> {
+  const { data, info } = await sharp(file, { limitInputPixels: false })
+    .removeAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  return { data, width: info.width, height: info.height };
+}
+
+/** Mean absolute difference (0–255) between row `ra` of `a` and row `rb` of `b`, over columns x0..x1. */
+export function rowMae(a: RawImage, ra: number, b: RawImage, rb: number, x0 = 0, x1 = a.width): number {
+  let sum = 0;
+  const oa = ra * a.width * 3;
+  const ob = rb * b.width * 3;
+  for (let i = x0 * 3; i < x1 * 3; i++) sum += Math.abs(a.data[oa + i] - b.data[ob + i]);
+  return sum / ((x1 - x0) * 3);
+}
+
+/** Mean signed difference per channel for one row: a colour shift shows up here. */
+export function rowChannelShift(a: RawImage, b: RawImage, r: number): [number, number, number] {
+  const out: [number, number, number] = [0, 0, 0];
+  const o = r * a.width * 3;
+  for (let x = 0; x < a.width; x++) {
+    for (let c = 0; c < 3; c++) out[c] += a.data[o + x * 3 + c] - b.data[o + x * 3 + c];
+  }
+  return out.map((v) => v / a.width) as [number, number, number];
+}
+
+/** Mean luminance of row r over columns x0..x1. */
+export function rowLuma(img: RawImage, r: number, x0: number, x1: number): number {
+  let sum = 0;
+  const o = r * img.width * 3;
+  for (let x = x0; x < x1; x++) {
+    const i = o + x * 3;
+    sum += 0.299 * img.data[i] + 0.587 * img.data[i + 1] + 0.114 * img.data[i + 2];
+  }
+  return sum / (x1 - x0);
+}
+
+export function median(values: number[]): number {
+  const s = [...values].sort((a, b) => a - b);
+  return s[Math.floor(s.length / 2)];
 }
