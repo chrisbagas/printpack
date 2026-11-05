@@ -5,7 +5,7 @@ import { unzipSync } from 'fflate';
 import {
   inspectBuffer,
   near,
-  OUT_DIR,
+  outDir,
   pickRatio,
   record,
   sampleRgb,
@@ -37,10 +37,11 @@ async function downloadFile(page: Page, upscale: 'none' | 'confirm' | 'skip' = '
 async function openZip(file: string): Promise<Map<string, ExportInfo & { buf: Buffer }>> {
   const entries = unzipSync(new Uint8Array(readFileSync(file)));
   const out = new Map<string, ExportInfo & { buf: Buffer }>();
-  mkdirSync(join(OUT_DIR, 'unzipped'), { recursive: true });
+  const dir = join(outDir(), 'unzipped');
+  mkdirSync(dir, { recursive: true });
   for (const [name, data] of Object.entries(entries)) {
     const buf = Buffer.from(data);
-    const path = join(OUT_DIR, 'unzipped', name);
+    const path = join(dir, name);
     writeFileSync(path, buf);
     out.set(name, { ...(await inspectBuffer(buf, path)), buf });
   }

@@ -1,6 +1,6 @@
 import { appendFileSync, mkdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import type { Download, Page } from '@playwright/test';
+import { test, type Download, type Page } from '@playwright/test';
 import sharp from 'sharp';
 
 export const FIXTURES = join(process.cwd(), 'tests', 'fixtures');
@@ -38,9 +38,15 @@ export async function cropPx(page: Page): Promise<[number, number]> {
   return [w, h];
 }
 
+/** Per-browser output folder, so projects don't overwrite each other's files. */
+export function outDir(): string {
+  const dir = join(OUT_DIR, test.info().project.name || 'default');
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
 export async function saveDownload(download: Download): Promise<string> {
-  mkdirSync(OUT_DIR, { recursive: true });
-  const file = join(OUT_DIR, download.suggestedFilename());
+  const file = join(outDir(), download.suggestedFilename());
   await download.saveAs(file);
   return file;
 }
@@ -102,7 +108,15 @@ export function record(testName: string, source: string, info: ExportInfo, extra
   const sourceBytes = statSync(join(FIXTURES, source)).size;
   appendFileSync(
     REPORT_PATH,
-    JSON.stringify({ test: testName, source, sourceBytes, ...info, file: undefined, ...extra }) + '\n',
+    JSON.stringify({
+      browser: test.info().project.name,
+      test: testName,
+      source,
+      sourceBytes,
+      ...info,
+      file: undefined,
+      ...extra,
+    }) + '\n',
   );
 }
 
