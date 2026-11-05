@@ -314,7 +314,10 @@ export function SellerPackPanel({
                     </button>
                   </div>
                   <ul className="upload-contents">
-                    {u.kind === 'pdf' && <li>Printing guide for buyers ({pack.guide.files.length} files described)</li>}
+                    {u.kind === 'pdf' && <li>
+                        Printing guide for buyers ({pack.guide.files.length}{' '}
+                        {pack.guide.files.length === 1 ? 'file' : 'files'} described)
+                      </li>}
                     {u.kind === 'jpg' && <li>Print file (JPG, 300 DPI)</li>}
                     {u.kind === 'zip' &&
                       u.contents.map((c) => (
